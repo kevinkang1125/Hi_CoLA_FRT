@@ -4,8 +4,8 @@ policy.Behavioural_v2) to the rule-based heuristic by MSE imitation on
 imitation_dataset.npz (produced by rule_based_collect.py).
 
 The output is the rule-based initial behavior policy used by main.py.
-By default it is written to behavior_init/Initial_Behave_policy.pth so the
-shipped pretrained/Initial_Behave_policy.pth is not overwritten.
+By default it is written to behavior_init/Behavioral_policy.pth so the
+shipped Hi_CoLA/utils/Behavioral_policy.pth is not overwritten.
 """
 import argparse
 import os
@@ -291,7 +291,7 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     parser = argparse.ArgumentParser(description="Imitate the rule-based policy")
     parser.add_argument("--data", type=str, default=os.path.join(here, "imitation_dataset.npz"))
-    parser.add_argument("--out", type=str, default=os.path.join(here, "Initial_Behave_policy.pth"))
+    parser.add_argument("--out", type=str, default=os.path.join(here, "Behavioral_policy.pth"))
     parser.add_argument("--epochs", type=str, default="100,500", help="comma-separated epoch grid")
     parser.add_argument("--eval_episodes", type=int, default=100)
     args = parser.parse_args()

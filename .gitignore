@@ -4,4 +4,4 @@ results/
 behavior_init/*.png
 behavior_init/*.csv
 behavior_init/*.parquet
-behavior_init/Initial_Behave_policy.pth
+behavior_init/Behavioral_policy.pth

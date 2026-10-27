@@ -10,7 +10,7 @@ Each behavioral loop (b-loop):
      early stopping and a KL trust region; the result is the next behavior policy.
 
 The initial behavior policy is the imitation of a rule-based dispatching
-heuristic (pretrained/Initial_Behave_policy.pth, see behavior_init/).
+heuristic (Hi_CoLA/utils/Behavioral_policy.pth, see behavior_init/).
 """
 import torch
 import torch.multiprocessing as mp
@@ -24,12 +24,11 @@ import os
 import pandas as pd
 
 from Hi_CoLA.Env.frt_env import FRT_Env
-from Hi_CoLA.policy import Behavioural_v2
-from Hi_CoLA.hi_cola_net import Hi_CoLA_Net
-import Hi_CoLA.hi_cola_net as hc
-from Hi_CoLA.utils.simulation import collect_trajectories
-from Hi_CoLA.utils.utils import kl_between_policies, perturb, get_flat_params, get_kl_bin
-from Hi_CoLA.utils.thomas_lb import batch_thomas_hc
+from Hi_CoLA.utils.policy import Behavioural_v2
+from Hi_CoLA.utils.hi_cola_net import Hi_CoLA_Net
+import Hi_CoLA.utils.hi_cola_net as hc
+from Hi_CoLA.utils.utils import (collect_trajectories, kl_between_policies, perturb,
+                                 get_flat_params, get_kl_bin, batch_thomas_hc)
 
 os.environ['TORCH_MULTIPROCESSING_SHARING_STRATEGY'] = 'file_system'
 
@@ -252,7 +251,7 @@ class OptimizedTrainer:
 def parse_args():
     parser = argparse.ArgumentParser(description="Hi-CoLA Experiment 1 on the FRT environment")
     parser.add_argument("--save_dir", type=str, default="./results/exp1")
-    parser.add_argument("--init_policy", type=str, default="./pretrained/Initial_Behave_policy.pth",
+    parser.add_argument("--init_policy", type=str, default="./Hi_CoLA/utils/Behavioral_policy.pth",
                         help="initial (rule-based imitation) behavior policy")
     parser.add_argument("--b_loops", type=int, default=60, help="number of behavioral loops")
     parser.add_argument("--traj_num", type=int, default=5000, help="episodes simulated per b-loop")
