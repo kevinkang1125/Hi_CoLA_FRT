@@ -175,11 +175,10 @@ class FRT_Env(gym.Env):
         scale = (self.travel_time_std ** 2) / mean_time
         
         sampled_time = np.random.gamma(shape, scale)
-        sampled_time = min(sampled_time, 2.0)  # Ensure minimum travel time of 2.0 minutes
+        sampled_time = min(sampled_time, 2.0)  # Cap travel time at 2.0 minutes (upper bound, as used in the paper)
         # lo = mean_time - 1.0
         # hi = mean_time + 1.0
         # sampled_time = np.random.uniform(lo, hi)
-        # Ensure minimum travel time of 2.0 minutes
         return sampled_time
     
     def reset(self):

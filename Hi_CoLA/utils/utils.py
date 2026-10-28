@@ -7,6 +7,7 @@
   importance sampling + concentration-inequality lower bound on the normalized
   return of each evaluation policy.
 """
+import copy
 import numpy as np
 import pandas as pd
 import torch
@@ -15,7 +16,6 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 from threading import Lock
 
-from Hi_CoLA.utils.policy import Behavioural_v2
 
 
 # ===========================================================================
@@ -51,25 +51,27 @@ def kl_between_policies(pi_perturbed, pi, states, eps=1e-8):
     return kl
 
 
-def perturb(pi, c=0.3):
+def perturb(pi, c=0.3, generator=None):
     """
     Perturb the policy parameters with Gaussian noise where sigma is proportional to each weight's magnitude.
 
     Args:
         pi (Policy): the original policy network
         c (float): proportional constant to scale sigma = c * |weight|
+        generator (torch.Generator, optional): RNG for the noise (global RNG if None)
 
     Returns:
         pi_perturbed (Policy): the perturbed policy
     """
-    pi_perturbed = Behavioural_v2()
-    pi_perturbed.load_state_dict(pi.state_dict())
+    # deepcopy rather than Behavioural_v2(): constructing a network would draw
+    # its (discarded) initial weights from the global RNG
+    pi_perturbed = copy.deepcopy(pi)
 
     with torch.no_grad():
         for param in pi_perturbed.parameters():
             if param.requires_grad:
                 sigma = torch.sqrt(c * param.abs() + 1e-8)
-                noise = torch.randn_like(param) * sigma
+                noise = torch.randn(param.shape, generator=generator, dtype=param.dtype) * sigma
                 param.add_(noise)
 
     return pi_perturbed
@@ -90,7 +92,7 @@ def get_kl_bin(kl_score):
 # Rollout
 # ===========================================================================
 
-def simulate_long_episode(sim_num, env, gamma, pi, min_steps=900, warmup_steps=100):
+def simulate_long_episode(sim_num, env, gamma, pi, min_steps=900, warmup_steps=100, seed=None):
     """
     Simulate one long episode to extract multiple short trajectories
     
@@ -101,10 +103,15 @@ def simulate_long_episode(sim_num, env, gamma, pi, min_steps=900, warmup_steps=1
         pi: policy function
         min_steps: minimum number of steps to simulate (after warmup)
         warmup_steps: number of steps to run before collecting data
+        seed: base seed; the episode is seeded with seed + sim_num (unseeded if None)
     
     Returns:
         dict with full episode data (only after warmup period)
     """
+    if seed is not None:
+        np.random.seed(seed + sim_num)
+        torch.manual_seed(seed + sim_num)
+
     # Episode data
     episode_data = {
         "observations": [],
@@ -248,7 +255,8 @@ def extract_trajectories_from_episode(episode_data, episode_num, traj_time_thres
 
 
 def collect_trajectories(env, n_episodes, pi, gamma=0.99, 
-                         traj_time_threshold=60, min_steps=800, warmup_steps=100, batch_size=100, n_workers=4):
+                         traj_time_threshold=60, min_steps=800, warmup_steps=100, batch_size=100, n_workers=4,
+                         seed=None):
     """
     Collect time-based trajectories with independent state/action/reward columns
     
@@ -261,6 +269,7 @@ def collect_trajectories(env, n_episodes, pi, gamma=0.99,
         min_steps: minimum steps per episode
         batch_size: episodes per batch for parallel processing
         n_workers: number of parallel processes
+        seed: base seed; episode i is seeded with seed + i (unseeded if None)
     
     Returns:
         DataFrame with independent columns, list of returns
@@ -281,7 +290,8 @@ def collect_trajectories(env, n_episodes, pi, gamma=0.99,
         gamma=gamma,
         pi=pi,
         min_steps=min_steps,
-        warmup_steps=warmup_steps
+        warmup_steps=warmup_steps,
+        seed=seed
     )
     
     with ProcessPoolExecutor(max_workers=n_workers) as executor:

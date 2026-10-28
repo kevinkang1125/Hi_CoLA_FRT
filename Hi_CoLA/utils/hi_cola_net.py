@@ -1,10 +1,8 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from sklearn.preprocessing import RobustScaler
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from tqdm import tqdm
 
 def load_model_features_and_labels(features, labels, train_ratio=0.7, device='cuda'):
@@ -124,7 +122,7 @@ class Hi_CoLA_Net(nn.Module):
 
 
 def train(features, labels, model, lr=1e-4, weight_decay=1e-6, epochs=3000, 
-          verbose=False, logit=False, train_ratio=0.7, use_improvements=True, device=None):
+          logit=False, train_ratio=0.7, use_improvements=True, device=None):
     """
     FIXED: Now trains on GPU
     
@@ -209,7 +207,8 @@ def train(features, labels, model, lr=1e-4, weight_decay=1e-6, epochs=3000,
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            best_model_state = model.state_dict().copy()
+            # Clone the tensors; state_dict() returns references to the live weights
+            best_model_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
             patience = 0
         else:
             patience += 1
@@ -223,70 +222,7 @@ def train(features, labels, model, lr=1e-4, weight_decay=1e-6, epochs=3000,
         model.load_state_dict(best_model_state)
         print(f"Loaded best model with validation loss: {best_val_loss:.6f}")
     
-    improved_metrics = evaluate(val_loader, model, device=device)
-    improved_metrics_2 = evaluate(train_loader, model, device=device)
-    if verbose:
-        plt.figure(figsize=(8, 6))
-        # Final performance on validation set
-        model.eval()
-        y_true, y_pred = [], []
-        with torch.no_grad():
-            for xb, yb in train_loader:
-                pred = model(xb)
-                y_true.extend(yb.squeeze().tolist())
-                y_pred.extend(pred.squeeze().tolist())
-            for xb, yb in val_loader:
-                pred = model(xb)
-                y_true.extend(yb.squeeze().tolist())
-                y_pred.extend(pred.squeeze().tolist())
-        np.savetxt("y_true_train.txt", y_true)
-        np.savetxt("y_pred_train.txt", y_pred)
-        r2 = r2_score(y_true, y_pred)
-        mape = np.mean(np.abs((np.array(y_true) - np.array(y_pred)) / np.array(y_true))) * 100
-        
-        plt.scatter(y_true, y_pred, alpha=0.6)
-        plt.plot([min(y_true), max(y_true)], [min(y_true), max(y_true)], 'r--', label="Ideal (y = x)")
-        plt.xlabel("Actual Confidence Lower Bound", fontsize=16)
-        plt.ylabel("Predicted Confidence Lower Bound", fontsize=16)
-        plt.title(f"Validation R² = {r2:.4f}, MAPE = {mape:.4f}%", fontsize=14)
-        plt.legend()
-        plt.grid(True)
-        plt.xticks(fontsize=12)
-        plt.yticks(fontsize=12)
-        
-        plt.tight_layout()
-        plt.show()
-    
-    return model, train_losses, val_losses, scaler, (improved_metrics['r2'],improved_metrics_2['r2']), label_up
-
-
-def evaluate(val_loader, model, device='cuda'):
-    """
-    FIXED: Evaluation on GPU
-    """
-    # train_loader, val_loader, _, _ = load_model_features_and_labels(
-    #     features, labels, train_ratio=0.8, device=device
-    # )
-    
     model.eval()
-    y_true, y_pred = [], []
     
-    with torch.no_grad():
-        for xb, yb in val_loader:
-            pred = model(xb)
-            # Move to CPU for metrics calculation
-            y_true.extend(yb.cpu().view(-1).tolist())
-            y_pred.extend(pred.cpu().view(-1).tolist())
-    
-    mse = mean_squared_error(y_true, y_pred)
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    mape = np.mean(np.abs((np.array(y_true) - np.array(y_pred)) / np.array(y_true))) * 100
+    return model, train_losses, val_losses, scaler, label_up
 
-    print(f"\nEvaluation Metrics on Validation Set:")
-    print(f"MSE  = {mse:.6f}")
-    print(f"MAE  = {mae:.6f}")  
-    print(f"R²   = {r2:.4f}")
-    print(f"MAPE = {mape:.2f}%")
-    
-    return {'mse': mse, 'mae': mae, 'r2': r2, 'mape': mape}

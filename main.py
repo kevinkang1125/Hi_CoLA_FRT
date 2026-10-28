@@ -16,8 +16,9 @@ import torch
 import torch.multiprocessing as mp
 import numpy as np
 from multiprocessing import Manager
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 import argparse
+import random
 import time
 import copy
 import os
@@ -44,7 +45,7 @@ def collect_trajectory_chunk_global(args):
     np.random.seed(seed)
     torch.manual_seed(seed)
     
-    return collect_trajectories(env=env, n_episodes=chunk_size, gamma=gamma, pi=pi)
+    return collect_trajectories(env=env, n_episodes=chunk_size, gamma=gamma, pi=pi, seed=seed)
         
 
 class OptimizedTrainer:
@@ -56,10 +57,12 @@ class OptimizedTrainer:
         """Step 1: collect trajectories with the current behavior policy in parallel"""
         chunk_size = traj_num // num_processes
         
-        # Prepare arguments for each process
+        # Prepare arguments for each process; episode seeds are drawn from the
+        # global RNG so every collection gets fresh but reproducible randomness
         pi_state_dict = behavior_pi.state_dict()
+        base_seed = np.random.randint(2**31 - traj_num)
         args_list = [
-            (env_name, pi_state_dict, chunk_size, gamma, i*1000)
+            (env_name, pi_state_dict, chunk_size, gamma, base_seed + i*chunk_size)
             for i in range(num_processes)
         ]
         
@@ -71,6 +74,9 @@ class OptimizedTrainer:
         combined_returns = []
         
         for traj_list, return_list in results:
+            # Each chunk numbers its trajectories from 0; offset them to keep IDs unique
+            if len(return_list):
+                traj_list["trajectory_id"] += len(combined_returns)
             combined_returns.extend(return_list)
             for key in traj_list.keys():
                 if key not in combined_traj:
@@ -83,14 +89,18 @@ class OptimizedTrainer:
     def parallel_perturbation_generation(self, behavior_pi, states, sigma, kl_threshold, target_count, bin_counts):
         """Step 2: generate perturbed policies, stratified into KL bins around the behavior policy"""
         perturbs = []
+        # Seeds for the perturbation batches come from a dedicated RNG so the
+        # number of batches submitted does not shift the global RNG
+        batch_seeds = np.random.default_rng(np.random.randint(2**31))
         manager = Manager()
         shared_bin_counts = manager.dict(bin_counts)
         result_queue = manager.Queue()
         
-        def generate_perturb_batch(batch_size=50):
+        def generate_perturb_batch(seed, batch_size=50):
+            generator = torch.Generator().manual_seed(seed)
             batch_perturbs = []
             for _ in range(batch_size):
-                pi_perturbed = perturb(pi=copy.deepcopy(behavior_pi), c=sigma)
+                pi_perturbed = perturb(pi=copy.deepcopy(behavior_pi), c=sigma, generator=generator)
                 kl_score = kl_between_policies(pi_perturbed, behavior_pi, states).item()
                 # print(kl_score)
                 
@@ -107,12 +117,12 @@ class OptimizedTrainer:
             
             while not all(count >= target_count for count in shared_bin_counts.values()):
                 # Submit batch jobs
-                future = executor.submit(generate_perturb_batch)
+                future = executor.submit(generate_perturb_batch, int(batch_seeds.integers(2**31)))
                 futures.append(future)
                 
-                # Process completed futures
-                completed_futures = [f for f in futures if f.done()]
-                for future in completed_futures:
+                # Process completed futures in submission order (keeps results reproducible)
+                while futures and futures[0].done():
+                    future = futures[0]
                     batch_results = future.result()
                     for pi_perturbed, kl_range in batch_results:
                         if shared_bin_counts[kl_range] < target_count:
@@ -120,12 +130,12 @@ class OptimizedTrainer:
                             perturbs.append(pi_perturbed)
                     
                     #print(dict(shared_bin_counts))
-                    futures.remove(future)
+                    futures.pop(0)
                 
                 # Limit concurrent futures
                 if len(futures) > self.num_workers * 2:
-                    # Wait for at least one to complete
-                    next(as_completed(futures))
+                    # Wait for the oldest one to complete
+                    futures[0].result()
         return perturbs, dict(shared_bin_counts)
     
     def parallel_thomas_calculation(self, behavior_pi, perturbs, traj_list, return_list, epochs, confidence_level):
@@ -265,10 +275,24 @@ def parse_args():
     parser.add_argument("--max_steps", type=int, default=1500, help="max policy improvement steps")
     parser.add_argument("--patience", type=int, default=20, help="Thomas LB early-stopping patience")
     parser.add_argument("--num_workers", type=int, default=min(8, os.cpu_count()))
+    parser.add_argument("--seed", type=int, default=0, help="global random seed")
     return parser.parse_args()
 
 
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    # Deterministic cuBLAS/cuDNN kernels (must be configured before CUDA is initialized)
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+
 def main(args):
+    set_seed(args.seed)
     # Configuration
     save_dir = args.save_dir
     os.makedirs(save_dir, exist_ok=True)
@@ -301,7 +325,6 @@ def main(args):
     result_rec = []
     epoch_record = []
     step_rec = []
-    mr_ls = []
     for b_loop in range(args.b_loops):
         traj_num = args.traj_num
         start_time = time.time()
@@ -344,16 +367,14 @@ def main(args):
         for param in behavior_pi.parameters():
             sample_params.append(np.array(param.detach().cpu().tolist()).flatten())
         input_dim = len(np.concatenate(sample_params))
-        hi_cola, _, _, scaler, mr, label_up = hc.train(
+        hi_cola, _, _, scaler, label_up = hc.train(
             features=perturbs,
             labels=thomas_lbs,
             model=Hi_CoLA_Net(input_dim=input_dim),
             lr=args.hc_lr,
             epochs=args.hc_epochs,
-            verbose=False,
             device=str(trainer.device),
         )
-        mr_ls.append(mr)
 
         # Step 5: policy improvement on the surrogate
         print("Training policy...")
@@ -379,8 +400,6 @@ def main(args):
         elapsed_time = time.time() - start_time
         print(f"Behavioral loop {b_loop + 1} completed in {elapsed_time:.2f} seconds")
         print(f"Confidence lowerbound: {epoch_record[-1]:.4f}")
-        # Columns: (validation R2, training R2) of the Hi-CoLA surrogate
-        np.savetxt(f"{save_dir}/Hi_cola_perform.txt", mr_ls, delimiter=",")
 
     # Final save
     torch.save(behavior_pi.state_dict(),
