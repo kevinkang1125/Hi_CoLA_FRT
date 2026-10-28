@@ -95,7 +95,3 @@ python behavior_init/train_imitation.py      # writes behavior_init/Behavioral_p
 ```
 
 `Hi_CoLA/utils/Behavioral_policy.pth` reaches an MSE of 1.25e-6 against the rule targets in the shipped `imitation_dataset.npz`. The shipped dataset was collected with an earlier version of the environment: uniform travel-time noise and the default cancel probability of 0.3. Re-collecting with the current `Hi_CoLA/Env/frt_env.py` will therefore give a slightly different dataset.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
